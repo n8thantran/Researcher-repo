@@ -1,0 +1,16 @@
+{
+  "model_name": "vgg19_proposed",
+  "dataset_name": "cifar10",
+  "test_accuracy": 81.93,
+  "test_loss": 0.5415368248939514,
+  "best_val_accuracy": 82.24,
+  "best_epoch": 141,
+  "total_params": 30136650,
+  "trainable_params": 29876490,
+  "epochs_run": 161,
+  "epochs_max": 250,
+  "batch_size": 128,
+  "lr": 1e-05,
+  "patience": 7,
+  "factor": 0.22360679774997896
+}

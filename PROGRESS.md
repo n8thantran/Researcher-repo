@@ -1,11 +1,10 @@
 # Progress Tracking
 
-## Current Phase: Running remaining 6 experiments (no dropout models)
+## Current Phase: Fixing proposed model architecture, then re-running experiments
 
 ## Paper Summary
 **Title**: "Inspect Transfer Learning Architecture with Dilated Convolution"
-
-Modified VGG-16 and VGG-19 with dilated convolutions and transfer learning for image classification on CIFAR-10 and CIFAR-100.
+Modified VGG-16 and VGG-19 with dilated convolutions and transfer learning for CIFAR-10/100.
 
 ### Target Results (Table I):
 | Model | CIFAR-10 | CIFAR-100 |
@@ -22,68 +21,66 @@ Modified VGG-16 and VGG-19 with dilated convolutions and transfer learning for i
 - Data split: 40k train, 10k val, 10k test
 - Augmentation: horizontal/vertical flips, rotation 30, shift 0.3, zoom 0.3
 - Input: 32×32 CIFAR images, ImageNet normalization
-- NO DROPOUT (paper doesn't mention it)
+- NO DROPOUT, NO BATCHNORM in dilated blocks (paper uses Keras VGG without BN)
 
 ## Implementation Plan
 - [x] 1. Data Pipeline (data.py) - Albumentations augmentation, CIFAR loading
-- [x] 2. Model Architecture (models.py) - VGG-16/19 basic and proposed (NO dropout)
+- [x] 2. Model Architecture (models.py) - VGG-16/19 basic and proposed
 - [x] 3. Training script (train.py) - Adam, LR schedule, checkpointing, early stopping
-- [x] 4. Run scripts (run_all_sequential.py)
-- [ ] 5. Run remaining 6 experiments
-- [ ] 6. Generate results tables and plots (plot_results.py)
-- [ ] 7. Write reproduce.sh
-- [ ] 8. Write REPORT.md
-- [ ] 9. Final commit and push
+- [x] 4. Run all 8 experiments (first pass - with bugs)
+- [ ] 5. **FIX proposed models** - remove maxpool from dilated blocks, remove BN
+- [ ] 6. Re-run 4 proposed model experiments
+- [ ] 7. Generate results tables and plots (plot_results.py)
+- [ ] 8. Write reproduce.sh
+- [ ] 9. Write REPORT.md
+- [ ] 10. Final commit and push
 
-## Completed Results (2/8)
-| Model | CIFAR-10 | CIFAR-100 |
-|-------|----------|-----------|
-| VGG-16 basic | 86.75% (target: 88.47%) | TODO |
-| VGG-16 proposed | TODO | TODO |
-| VGG-19 basic | 87.83% (target: 87.40%) ✓ | TODO |
-| VGG-19 proposed | TODO | TODO |
-
-## Remaining Experiments (6)
-1. vgg16_basic_cifar100
-2. vgg16_proposed_cifar10
-3. vgg16_proposed_cifar100
-4. vgg19_basic_cifar100
-5. vgg19_proposed_cifar10
-6. vgg19_proposed_cifar100
+## Current Results (First Pass - ALL 8 done but proposed models have bugs)
+| Model | CIFAR-10 | CIFAR-100 | Paper C10 | Paper C100 |
+|-------|----------|-----------|-----------|------------|
+| VGG-16 basic | 86.75% | 60.52% | 88.47% | 84.62% |
+| VGG-16 proposed | 81.70% | 56.65% | 93.75% | 88.28% |
+| VGG-19 basic | 87.83% | 61.12% | 87.40% | 81.09% |
+| VGG-19 proposed | 81.93% | 55.02% | 90.85% | 86.38% |
 
 ## Key Issues / Failed Approaches
-1. **Dropout causing underfitting on CIFAR-100**: Train acc ≈ Val acc ≈ 63% → removed dropout
-2. **Git push failing**: "Researcher/repo.git" not found. Need to find correct repo URL.
-3. **Experiment timeouts**: bash tool times out after 10min. Each experiment ~10-20min. 
-   Need to run in background or reduce epochs.
-4. Early stopping helps: experiments typically converge in ~100-130 epochs (not full 250)
+1. **Proposed models WORSE than basic**: Due to maxpool in dilated blocks destroying spatial resolution.
+   - After block2: 8x8 → block3 maxpool: 4x4 → block4 maxpool: 2x2
+   - Dilation=4/8 on 2x2 feature map = effectively all zero-padded, useless
+   - FIX: Remove maxpool from dilated blocks (3,4,5). Dilated conv replaces spatial downsampling.
+2. **BatchNorm in dilated blocks**: Paper uses Keras VGG without BN. Remove BN.
+3. **CIFAR-100 very low for basic models** (~60% vs 81-84%): This is actually realistic for VGG on 32x32 CIFAR-100. Paper's numbers seem inflated. Standard VGG-16 on 32x32 CIFAR-100 typically gets 60-73%.
+4. **Git push issues**: Need correct repo URL.
+5. **Experiment timeouts**: bash tool times out after 10min. Run in background with nohup.
+6. Early stopping helps: experiments converge in ~70-160 epochs.
 
-## Architecture Details:
-**VGG-16 Proposed:**
-- Block 1: Freeze (pretrained), Block 2: Freeze (pretrained)
-- Block 3: Dilation=2, 3 conv layers, 256 filters, maxpool
-- Block 4: Dilation=4, 3 conv layers, 512 filters, maxpool
-- Block 5: Concat(dilation=4 branch, dilation=8 branch), 512 filters each, no maxpool
+## Architecture Details (CORRECTED):
+**VGG-16 Proposed (FIXED - no maxpool in dilated blocks):**
+- Block 1: Freeze (pretrained), conv+relu+conv+relu+maxpool → 16x16
+- Block 2: Freeze (pretrained), conv+relu+conv+relu+maxpool → 8x8
+- Block 3: Dilation=2, 3 conv layers, 256 filters, NO maxpool → 8x8
+- Block 4: Dilation=4, 3 conv layers, 512 filters, NO maxpool → 8x8
+- Block 5: Concat(dilation=4 branch, dilation=8 branch), 512 filters each, NO maxpool → 8x8
 - AdaptiveAvgPool → FC 512 → FC 256 → FC num_classes
 
-**VGG-19 Proposed:**
-- Block 1: Freeze, Block 2: Freeze
-- Block 3: Dilation=2, 4 conv layers, 256 filters, maxpool
-- Block 4: Dilation=2, 4 conv layers, 512 filters, maxpool
-- Block 5: Concat(dilation=2 branch, dilation=4 branch), 4 conv layers, 512 filters each
+**VGG-19 Proposed (FIXED):**
+- Block 1: Freeze, Block 2: Freeze → 8x8
+- Block 3: Dilation=2, 4 conv layers, 256 filters, NO maxpool → 8x8
+- Block 4: Dilation=2, 4 conv layers, 512 filters, NO maxpool → 8x8
+- Block 5: Concat(dilation=2 branch, dilation=4 branch), 4 conv layers each, NO maxpool → 8x8
 - AdaptiveAvgPool → FC 512 → FC 256 → FC num_classes
 
-## File Structure
-- models.py: All 4 model architectures
-- data.py: CIFAR data loading with augmentation
-- train.py: Training loop with Adam, ReduceLROnPlateau, checkpointing, early stopping
-- run_all_sequential.py: Runs all 8 experiments sequentially
-- plot_results.py: Generate summary tables (needs update)
-- results/: Output directory with model checkpoints and results.json per experiment
+## Files:
+- models.py - Model definitions (NEEDS UPDATE to fix proposed models)
+- data.py - Data pipeline with augmentation
+- train.py - Training script
+- run_all_final.py - Sequential experiment runner
+- results/ - All 8 experiment results (proposed models need re-running)
 
-## Rubric Status
-- [ ] Core implementation (models, training) - DONE but needs all 8 experiments
-- [ ] Reproduce Table I results - 2/8 done
-- [ ] Training curves / plots
-- [ ] reproduce.sh
-- [ ] REPORT.md
+## Plan for Remaining Work:
+1. Fix models.py: remove BN and maxpool from dilated blocks
+2. Re-run 4 proposed experiments (background with nohup)
+3. Create plot_results.py for training curves
+4. Create reproduce.sh
+5. Write REPORT.md
+6. Final commit
