@@ -8,11 +8,11 @@ Implements:
 3. VGG-19 Basic (standard VGG-19 with transfer learning, all blocks trainable)
 4. VGG-19 Proposed (frozen blocks 1-2, dilated blocks 3-5 with concatenation)
 
-Key design decisions:
-- Paper does NOT mention dropout or BatchNorm -> we don't use them in dilated blocks
-- Classifier: FC 512 -> 256 -> num_classes
-- Dilated convolutions REPLACE maxpooling (no maxpool in dilated blocks)
-- Pretrained ImageNet weights are loaded into dilated conv layers (same 3x3 kernel shape)
+Architecture from paper:
+- Each dilated block is followed by a max-pooling layer (paper line 349-350)
+- Dilated convolutions use same-padding (Keras default)
+- Pretrained ImageNet weights loaded into dilated conv layers
+- Classifier: FC 512 -> FC 256 -> num_classes with ReLU
 """
 
 import torch
@@ -20,11 +20,10 @@ import torch.nn as nn
 import torchvision.models as models
 
 
-def make_dilated_block(in_channels, out_channels, num_layers, dilation_rate):
+def make_dilated_block(in_channels, out_channels, num_layers, dilation_rate, use_maxpool=True):
     """
-    Create a block of dilated convolutions with ReLU. NO BatchNorm, NO maxpool.
-    Matches VGG architecture style (Conv + ReLU) but with dilation.
-    Dilated convolutions replace maxpooling for spatial resolution reduction.
+    Create a block of dilated convolutions with ReLU, optionally followed by maxpool.
+    Uses same-padding: padding = dilation * (kernel_size - 1) // 2 = dilation for 3x3.
     """
     layers = []
     for i in range(num_layers):
@@ -32,6 +31,8 @@ def make_dilated_block(in_channels, out_channels, num_layers, dilation_rate):
         layers.append(nn.Conv2d(ic, out_channels, kernel_size=3,
                                 padding=dilation_rate, dilation=dilation_rate))
         layers.append(nn.ReLU(inplace=True))
+    if use_maxpool:
+        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
     return nn.Sequential(*layers)
 
 
@@ -44,7 +45,6 @@ def init_dilated_block_from_pretrained(dilated_block, pretrained_convs):
     for layer in dilated_block:
         if isinstance(layer, nn.Conv2d) and conv_idx < len(pretrained_convs):
             pretrained_conv = pretrained_convs[conv_idx]
-            # Copy weights - shapes match since dilation doesn't affect kernel size
             if layer.weight.shape == pretrained_conv.weight.shape:
                 layer.weight.data.copy_(pretrained_conv.weight.data)
                 if layer.bias is not None and pretrained_conv.bias is not None:
@@ -84,15 +84,14 @@ class VGG16Basic(nn.Module):
 class VGG16Proposed(nn.Module):
     """
     VGG-16 Proposed:
-    - Block 1: Freeze (pretrained) - 2 conv layers, 64 filters, maxpool -> 16x16
-    - Block 2: Freeze (pretrained) - 2 conv layers, 128 filters, maxpool -> 8x8
-    - Block 3: Dilation rate 2, 3 conv layers, 256 filters, NO maxpool -> 8x8
-    - Block 4: Dilation rate 4, 3 conv layers, 512 filters, NO maxpool -> 8x8
-    - Block 5: Concatenate two parallel branches (dilation rate 4 and 8), 512 filters each
-    - AdaptiveAvgPool -> FC 512 -> FC 256 -> FC num_classes
+    - Block 1: Freeze (pretrained) - 2 conv, maxpool -> 16x16
+    - Block 2: Freeze (pretrained) - 2 conv, maxpool -> 8x8
+    - Block 3: Dilation=2, 3 conv, maxpool -> 4x4
+    - Block 4: Dilation=4, 3 conv, maxpool -> 2x2
+    - Block 5: Two parallel branches (d=4, d=8), 3 conv each, maxpool -> 1x1
+    - Concat -> FC 512 -> FC 256 -> FC num_classes
     
-    Dilated convolutions replace maxpooling for spatial resolution management.
-    All dilated conv layers initialized with pretrained ImageNet weights.
+    Paper: "Each block of the convolution layer is followed by a max-pooling layer"
     """
     def __init__(self, num_classes=10):
         super().__init__()
@@ -111,31 +110,25 @@ class VGG16Proposed(nn.Module):
             param.requires_grad = False
         
         # Get pretrained conv layers for initialization
-        # VGG-16 features layout: 
-        # Block3: features[10](conv), [11](relu), [12](conv), [13](relu), [14](conv), [15](relu), [16](maxpool)
-        # Block4: features[17](conv), [18](relu), [19](conv), [20](relu), [21](conv), [22](relu), [23](maxpool)
-        # Block5: features[24](conv), [25](relu), [26](conv), [27](relu), [28](conv), [29](relu), [30](maxpool)
         block3_pretrained = [features[10], features[12], features[14]]
         block4_pretrained = [features[17], features[19], features[21]]
         block5_pretrained = [features[24], features[26], features[28]]
         
-        # Block 3: dilation=2, NO maxpool (dilated conv replaces spatial downsampling)
-        self.block3 = make_dilated_block(128, 256, num_layers=3, dilation_rate=2)
+        # Block 3: dilation=2, with maxpool
+        self.block3 = make_dilated_block(128, 256, num_layers=3, dilation_rate=2, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block3, block3_pretrained)
         
-        # Block 4: dilation=4, NO maxpool
-        self.block4 = make_dilated_block(256, 512, num_layers=3, dilation_rate=4)
+        # Block 4: dilation=4, with maxpool
+        self.block4 = make_dilated_block(256, 512, num_layers=3, dilation_rate=4, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block4, block4_pretrained)
         
-        # Block 5: Two parallel branches, concatenated, NO maxpool
-        self.block5_branch1 = make_dilated_block(512, 512, num_layers=3, dilation_rate=4)
+        # Block 5: Two parallel branches with maxpool, then concatenate
+        self.block5_branch1 = make_dilated_block(512, 512, num_layers=3, dilation_rate=4, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block5_branch1, block5_pretrained)
-        self.block5_branch2 = make_dilated_block(512, 512, num_layers=3, dilation_rate=8)
+        self.block5_branch2 = make_dilated_block(512, 512, num_layers=3, dilation_rate=8, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block5_branch2, block5_pretrained)
         
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # After concatenation: 512 + 512 = 1024
+        # After concat: 512 + 512 = 1024, spatial 1x1
         self.classifier = nn.Sequential(
             nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
@@ -145,16 +138,15 @@ class VGG16Proposed(nn.Module):
         )
     
     def forward(self, x):
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.block4(x)
+        x = self.block1(x)   # -> 16x16
+        x = self.block2(x)   # -> 8x8
+        x = self.block3(x)   # -> 4x4
+        x = self.block4(x)   # -> 2x2
         
-        b1 = self.block5_branch1(x)
-        b2 = self.block5_branch2(x)
-        x = torch.cat([b1, b2], dim=1)
+        b1 = self.block5_branch1(x)  # -> 1x1
+        b2 = self.block5_branch2(x)  # -> 1x1
+        x = torch.cat([b1, b2], dim=1)  # -> 1024 x 1 x 1
         
-        x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
@@ -194,11 +186,10 @@ class VGG19Proposed(nn.Module):
     VGG-19 Proposed:
     - Block 1: Freeze (pretrained) -> 16x16
     - Block 2: Freeze (pretrained) -> 8x8
-    - Block 3: Dilation rate 2, 4 conv layers, 256 filters, NO maxpool -> 8x8
-    - Block 4: Dilation rate 2, 4 conv layers, 512 filters, NO maxpool -> 8x8
-    - Block 5: Concatenate two parallel branches (dilation rate 2 and 4),
-               4 conv layers, 512 filters each, NO maxpool -> 8x8
-    - AdaptiveAvgPool -> FC 512 -> FC 256 -> FC num_classes
+    - Block 3: Dilation=2, 4 conv, maxpool -> 4x4
+    - Block 4: Dilation=2, 4 conv, maxpool -> 2x2
+    - Block 5: Two parallel branches (d=2, d=4), 4 conv each, maxpool -> 1x1
+    - Concat -> FC 512 -> FC 256 -> FC num_classes
     """
     def __init__(self, num_classes=10):
         super().__init__()
@@ -214,29 +205,24 @@ class VGG19Proposed(nn.Module):
         for param in self.block2.parameters():
             param.requires_grad = False
         
-        # VGG-19 features layout:
-        # Block3: [10,12,14,16] are conv layers, [18] is maxpool
-        # Block4: [19,21,23,25] are conv layers, [27] is maxpool
-        # Block5: [28,30,32,34] are conv layers, [36] is maxpool
+        # VGG-19 conv layers
         block3_pretrained = [features[10], features[12], features[14], features[16]]
         block4_pretrained = [features[19], features[21], features[23], features[25]]
         block5_pretrained = [features[28], features[30], features[32], features[34]]
         
-        # Block 3: dilation=2, NO maxpool
-        self.block3 = make_dilated_block(128, 256, num_layers=4, dilation_rate=2)
+        # Block 3: dilation=2, with maxpool
+        self.block3 = make_dilated_block(128, 256, num_layers=4, dilation_rate=2, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block3, block3_pretrained)
         
-        # Block 4: dilation=2, NO maxpool
-        self.block4 = make_dilated_block(256, 512, num_layers=4, dilation_rate=2)
+        # Block 4: dilation=2, with maxpool
+        self.block4 = make_dilated_block(256, 512, num_layers=4, dilation_rate=2, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block4, block4_pretrained)
         
-        # Block 5: Two parallel branches, concatenated, NO maxpool
-        self.block5_branch1 = make_dilated_block(512, 512, num_layers=4, dilation_rate=2)
+        # Block 5: Two parallel branches with maxpool
+        self.block5_branch1 = make_dilated_block(512, 512, num_layers=4, dilation_rate=2, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block5_branch1, block5_pretrained)
-        self.block5_branch2 = make_dilated_block(512, 512, num_layers=4, dilation_rate=4)
+        self.block5_branch2 = make_dilated_block(512, 512, num_layers=4, dilation_rate=4, use_maxpool=True)
         init_dilated_block_from_pretrained(self.block5_branch2, block5_pretrained)
-        
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         
         # After concatenation: 512 + 512 = 1024
         self.classifier = nn.Sequential(
@@ -248,16 +234,15 @@ class VGG19Proposed(nn.Module):
         )
     
     def forward(self, x):
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.block4(x)
+        x = self.block1(x)   # -> 16x16
+        x = self.block2(x)   # -> 8x8
+        x = self.block3(x)   # -> 4x4
+        x = self.block4(x)   # -> 2x2
         
-        b1 = self.block5_branch1(x)
-        b2 = self.block5_branch2(x)
+        b1 = self.block5_branch1(x)  # -> 1x1
+        b2 = self.block5_branch2(x)  # -> 1x1
         x = torch.cat([b1, b2], dim=1)
         
-        x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
