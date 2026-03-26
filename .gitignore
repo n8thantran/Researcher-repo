@@ -1,0 +1,16 @@
+# Data files
+data/
+*.tar.gz
+
+# Model checkpoints (too large for GitHub)
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+
+# Old results
+results_test/

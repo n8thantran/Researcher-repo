@@ -1,0 +1,16 @@
+{
+  "model_name": "vgg19_basic",
+  "dataset_name": "cifar10",
+  "test_accuracy": 87.83,
+  "test_loss": 0.40210542583465575,
+  "best_val_accuracy": 88.24,
+  "best_epoch": 72,
+  "total_params": 20420938,
+  "trainable_params": 20420938,
+  "epochs_run": 103,
+  "epochs_max": 250,
+  "batch_size": 64,
+  "lr": 1e-05,
+  "patience": 7,
+  "factor": 0.22360679774997896
+}
