@@ -1,6 +1,6 @@
 # Progress Tracking
 
-## Current Phase: Fixing proposed model architecture, then re-running experiments
+## Current Phase: Running proposed model experiments (v2 - no maxpool in dilated blocks)
 
 ## Paper Summary
 **Title**: "Inspect Transfer Learning Architecture with Dilated Convolution"
@@ -21,66 +21,67 @@ Modified VGG-16 and VGG-19 with dilated convolutions and transfer learning for C
 - Data split: 40k train, 10k val, 10k test
 - Augmentation: horizontal/vertical flips, rotation 30, shift 0.3, zoom 0.3
 - Input: 32×32 CIFAR images, ImageNet normalization
-- NO DROPOUT, NO BATCHNORM in dilated blocks (paper uses Keras VGG without BN)
+- Keras implementation with TensorFlow backend
+
+## Architecture Details:
+**VGG-16 Proposed:**
+- Block 1: Freeze (pretrained), 2 conv+relu+maxpool → 16x16
+- Block 2: Freeze (pretrained), 2 conv+relu+maxpool → 8x8
+- Block 3: Dilation=2, 3 conv+relu (no maxpool) → 8x8
+- Block 4: Dilation=4, 3 conv+relu (no maxpool) → 8x8
+- Block 5: Concat(dilation=4, dilation=8), 3 conv+relu each (no maxpool) → 8x8
+- AdaptiveAvgPool → 1x1, Concat → 1024
+- FC 512 → FC 256 → FC num_classes
+
+**VGG-19 Proposed:**
+- Block 1&2: Same as VGG-16
+- Block 3: Dilation=2, 4 conv+relu (no maxpool) → 8x8
+- Block 4: Dilation=2, 4 conv+relu (no maxpool) → 8x8
+- Block 5: Concat(dilation=2, dilation=4), 4 conv+relu each (no maxpool) → 8x8
+- Rest same as VGG-16
 
 ## Implementation Plan
 - [x] 1. Data Pipeline (data.py) - Albumentations augmentation, CIFAR loading
 - [x] 2. Model Architecture (models.py) - VGG-16/19 basic and proposed
 - [x] 3. Training script (train.py) - Adam, LR schedule, checkpointing, early stopping
-- [x] 4. Run all 8 experiments (first pass - with bugs)
-- [ ] 5. **FIX proposed models** - remove maxpool from dilated blocks, remove BN
-- [ ] 6. Re-run 4 proposed model experiments
+- [x] 4. Run all 4 basic experiments
+- [x] 5. Fix proposed models - remove maxpool from dilated blocks
+- [ ] 6. Run 4 proposed model experiments (IN PROGRESS - run_proposed_v2.py)
 - [ ] 7. Generate results tables and plots (plot_results.py)
 - [ ] 8. Write reproduce.sh
 - [ ] 9. Write REPORT.md
 - [ ] 10. Final commit and push
 
-## Current Results (First Pass - ALL 8 done but proposed models have bugs)
+## Current Results
 | Model | CIFAR-10 | CIFAR-100 | Paper C10 | Paper C100 |
 |-------|----------|-----------|-----------|------------|
 | VGG-16 basic | 86.75% | 60.52% | 88.47% | 84.62% |
-| VGG-16 proposed | 81.70% | 56.65% | 93.75% | 88.28% |
+| VGG-16 proposed | 81.01% | running... | 93.75% | 88.28% |
 | VGG-19 basic | 87.83% | 61.12% | 87.40% | 81.09% |
-| VGG-19 proposed | 81.93% | 55.02% | 90.85% | 86.38% |
+| VGG-19 proposed | pending | pending | 90.85% | 86.38% |
 
 ## Key Issues / Failed Approaches
-1. **Proposed models WORSE than basic**: Due to maxpool in dilated blocks destroying spatial resolution.
-   - After block2: 8x8 → block3 maxpool: 4x4 → block4 maxpool: 2x2
-   - Dilation=4/8 on 2x2 feature map = effectively all zero-padded, useless
-   - FIX: Remove maxpool from dilated blocks (3,4,5). Dilated conv replaces spatial downsampling.
-2. **BatchNorm in dilated blocks**: Paper uses Keras VGG without BN. Remove BN.
-3. **CIFAR-100 very low for basic models** (~60% vs 81-84%): This is actually realistic for VGG on 32x32 CIFAR-100. Paper's numbers seem inflated. Standard VGG-16 on 32x32 CIFAR-100 typically gets 60-73%.
-4. **Git push issues**: Need correct repo URL.
-5. **Experiment timeouts**: bash tool times out after 10min. Run in background with nohup.
-6. Early stopping helps: experiments converge in ~70-160 epochs.
+1. **First proposed run (with maxpool in dilated blocks)**: VGG-16 proposed got 77.26% on CIFAR-10. Maxpool in dilated blocks shrinks spatial dims too much - dilation=8 on 2x2 maps is pointless.
+2. **Second proposed run (no maxpool, no BN)**: VGG-16 proposed got 81.01% on CIFAR-10. Better but still below paper.
+3. **CIFAR-100 basic models very low** (~60% vs 81-84% paper): Standard VGG on 32x32 CIFAR-100 typically gets 60-73%. Paper used Keras which may handle VGG feature extraction differently.
+4. **Paper's numbers seem unrealistically high**: 93.75% CIFAR-10, 88.28% CIFAR-100 for VGG-16. Most VGG papers on 32x32 CIFAR don't reach these numbers without significant modifications (BN, dropout, etc.).
+5. **Proposed < Basic on CIFAR-10**: Our proposed (81.01%) < basic (86.75%). Paper claims proposed should be higher. The frozen pretrained blocks help but dilated convs with random-ish classifier aren't converging as well.
 
-## Architecture Details (CORRECTED):
-**VGG-16 Proposed (FIXED - no maxpool in dilated blocks):**
-- Block 1: Freeze (pretrained), conv+relu+conv+relu+maxpool → 16x16
-- Block 2: Freeze (pretrained), conv+relu+conv+relu+maxpool → 8x8
-- Block 3: Dilation=2, 3 conv layers, 256 filters, NO maxpool → 8x8
-- Block 4: Dilation=4, 3 conv layers, 512 filters, NO maxpool → 8x8
-- Block 5: Concat(dilation=4 branch, dilation=8 branch), 512 filters each, NO maxpool → 8x8
-- AdaptiveAvgPool → FC 512 → FC 256 → FC num_classes
+## Possible Improvements (if time):
+- Higher LR or different LR schedule
+- Add dropout to classifier  
+- Try with BN in dilated blocks
+- Resize images to 64x64 or 224x224
 
-**VGG-19 Proposed (FIXED):**
-- Block 1: Freeze, Block 2: Freeze → 8x8
-- Block 3: Dilation=2, 4 conv layers, 256 filters, NO maxpool → 8x8
-- Block 4: Dilation=2, 4 conv layers, 512 filters, NO maxpool → 8x8
-- Block 5: Concat(dilation=2 branch, dilation=4 branch), 4 conv layers each, NO maxpool → 8x8
-- AdaptiveAvgPool → FC 512 → FC 256 → FC num_classes
+## Key Files:
+- models.py: All 4 model architectures
+- data.py: Data loading with augmentation
+- train.py: Training loop with LR scheduling
+- run_proposed_v2.py: Script to run 4 proposed experiments
+- results/: Contains all experiment results
+- logs/: Training logs
 
-## Files:
-- models.py - Model definitions (NEEDS UPDATE to fix proposed models)
-- data.py - Data pipeline with augmentation
-- train.py - Training script
-- run_all_final.py - Sequential experiment runner
-- results/ - All 8 experiment results (proposed models need re-running)
-
-## Plan for Remaining Work:
-1. Fix models.py: remove BN and maxpool from dilated blocks
-2. Re-run 4 proposed experiments (background with nohup)
-3. Create plot_results.py for training curves
-4. Create reproduce.sh
-5. Write REPORT.md
-6. Final commit
+## Background Process:
+- PID file: logs/proposed_v2.pid
+- Log: logs/proposed_v2.log
+- Running: vgg16_proposed_cifar100 (started), then vgg19_proposed_cifar10, vgg19_proposed_cifar100
